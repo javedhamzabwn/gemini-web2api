@@ -86,7 +86,7 @@ When configuring **OpenCode**, **Cline**, **Cursor**, or custom providers, use t
 ### 1. Installation
 
 ```bash
-git clone https://github.com/yourusername/gemini-web2api.git
+git clone https://github.com/javedhamzabwn/gemini-web2api.git
 cd gemini-web2api
 pip install -r requirements.txt
 ```
