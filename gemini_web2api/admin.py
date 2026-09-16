@@ -68,8 +68,16 @@ def get_stats():
             "cooldown_seconds": remaining_cooldown
         })
         
+    raw_master = CONFIG.get("api_keys") or []
+    if isinstance(raw_master, str):
+        raw_master = [raw_master]
+    if CONFIG.get("api_key") and CONFIG.get("api_key") not in raw_master:
+        raw_master.append(CONFIG.get("api_key"))
+    real_master = [k.strip() for k in raw_master if k and k.strip() not in ("sk-gemini-example-key", "sk-hermes-test")]
+    master_key_display = real_master[0] if real_master else "Open / Any key (Local Developer Mode)"
+
     return {
-        "master_key": CONFIG.get("api_key"),
+        "master_key": master_key_display,
         "total_accounts": len(accounts),
         "temporary_chats": CONFIG.get("temporary_chats", False),
         "accounts": stats

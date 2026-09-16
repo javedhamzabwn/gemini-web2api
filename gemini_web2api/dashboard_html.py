@@ -225,7 +225,7 @@ DASHBOARD_HTML = """
             const botBubble = document.getElementById(botId);
             
             try {
-                const authToken = selectedAccount === "auto" ? (masterKey === "None configured" ? "" : masterKey) : selectedAccount;
+                const authToken = selectedAccount === "auto" ? "sk-gemini-auto" : selectedAccount;
                 let modelToUse = selectedModel;
                 if (document.getElementById('chat-thinking')?.checked) {
                     modelToUse += "@think=0";

@@ -49,6 +49,19 @@ MODELS = {
         "mode": 6, "think": 4,
         "desc": "Alias for Gemini 3.5 Flash-Lite",
     },
+    # OpenAI drop-in aliases for clients with hardcoded model selectors
+    "gpt-4o": {
+        "mode": 2, "think": 0,
+        "desc": "Drop-in alias -> Gemini 3.8 Flash Thinking",
+    },
+    "gpt-4": {
+        "mode": 2, "think": 0,
+        "desc": "Drop-in alias -> Gemini 3.8 Flash Thinking",
+    },
+    "gpt-3.5-turbo": {
+        "mode": 1, "think": 4,
+        "desc": "Drop-in alias -> Gemini 3.8 Flash",
+    },
 }
 
 

@@ -57,8 +57,10 @@ class GeminiHandler(BaseHTTPRequestHandler):
     def send_json(self, data, status=200):
         body = json.dumps(data, ensure_ascii=False).encode()
         self.send_response(status)
-        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
+        self.send_header("Access-Control-Allow-Headers", "*")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
@@ -124,8 +126,9 @@ class GeminiHandler(BaseHTTPRequestHandler):
     def do_OPTIONS(self):
         self.send_response(204)
         self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
         self.send_header("Access-Control-Allow-Headers", "*")
+        self.send_header("Access-Control-Max-Age", "86400")
         self.end_headers()
 
     def log_message(self, format, *args):
@@ -150,99 +153,139 @@ class GeminiHandler(BaseHTTPRequestHandler):
 
     def _authenticate(self):
         """Returns (is_authorized, forced_account_name)"""
-        master_keys = CONFIG.get("api_keys", [])
-        master_key = master_keys[0] if master_keys else None
-        
-        accounts = get_all_accounts()
-        has_any_auth = bool(master_keys) or any(a.get("api_key") for a in accounts)
+        raw_master = CONFIG.get("api_keys") or []
+        if isinstance(raw_master, str):
+            raw_master = [raw_master]
+        if CONFIG.get("api_key") and CONFIG.get("api_key") not in raw_master:
+            raw_master.append(CONFIG.get("api_key"))
+            
+        PLACEHOLDERS = {"sk-gemini-example-key", "sk-hermes-test", "example", ""}
+        master_keys = [k.strip() for k in raw_master if k and isinstance(k, str) and k.strip()]
+        has_real_master = any(k not in PLACEHOLDERS for k in master_keys)
         
         token = None
         auth = self.headers.get("Authorization", "")
         if auth.startswith("Bearer "):
-            token = auth.split(" ", 1)[1]
+            token = auth.split(" ", 1)[1].strip()
         else:
             for h in ("x-api-key", "x-goog-api-key"):
-                if self.headers.get(h):
-                    token = self.headers.get(h)
+                val = self.headers.get(h)
+                if val:
+                    token = val.strip()
                     break
             if not token and "?" in self.path:
                 for pair in self.path.split("?", 1)[1].split("&"):
                     if pair.startswith("key="):
-                        token = pair[4:]
+                        token = pair[4:].strip()
                         break
                         
-        if not has_any_auth:
-            # If no auth is configured at all, fallback to allowing it, 
-            # but we can still check if token is an account name directly
-            if token and any(a.get("name") == token for a in accounts):
-                return True, token
-            return True, None
-                        
         if token:
-            if token in master_keys:
-                return True, None
-                
+            token = token.strip().strip('"').strip("'")
+            if not token:
+                token = None
+
+        accounts = get_all_accounts()
+
+        # 1. If token matches a specific account key or name, force that account
+        if token:
             for acc in accounts:
-                acc_key = acc.get("api_key")
-                acc_name = acc.get("name")
-                if (acc_key and token == acc_key) or token == acc_name:
+                acc_key = (acc.get("api_key") or "").strip()
+                acc_name = (acc.get("name") or "").strip()
+                if (acc_key and token == acc_key) or (acc_name and token == acc_name):
                     return True, acc_name
-                    
-        return False, None
+
+        # 2. If real master keys are configured, check against them
+        if has_real_master:
+            if token and any(token == k for k in master_keys if k not in PLACEHOLDERS):
+                return True, None
+            return False, None
+
+        # 3. Default developer mode: no master key set (or placeholder key used).
+        # Allow any token (or no token) and auto-balance across all accounts!
+        return True, None
 
     def do_GET(self):
         try:
-            if self.path == "/dashboard" or self.path == "/":
+            clean_path = self.path.split("?")[0].rstrip("/")
+            if not clean_path:
+                clean_path = "/"
+                
+            if clean_path in ("/dashboard", "/"):
                 self._set_html_headers()
                 self.wfile.write(DASHBOARD_HTML.encode("utf-8"))
                 return
                 
-            if self.path == "/api/stats":
+            if clean_path == "/api/stats":
                 self._set_headers()
                 self.wfile.write(json.dumps(get_stats()).encode("utf-8"))
                 return
                 
-            if self.path == "/api/status":
+            if clean_path == "/api/status":
                 self._set_headers()
                 self.wfile.write(json.dumps({"sync_requested": get_sync_status()}).encode("utf-8"))
                 return
 
-            if self.path == "/api/check":
+            if clean_path == "/api/check":
                 self._set_headers()
                 self.wfile.write(json.dumps(verify_all_accounts()).encode("utf-8"))
                 return
                 
             is_auth, force_acc = self._authenticate()
-            if self.path.startswith("/v1") and not is_auth:
+            if not is_auth:
                 self.send_json({"error": {"message": "invalid api key"}}, 401)
                 return
                 
             set_current_account(force_acc)
             
-            if self.path == "/v1/models":
+            if clean_path in ("/v1/models", "/models", "/api/models"):
                 models_list = []
-                if force_acc:
-                    for n, c in MODELS.items():
-                        models_list.append({"id": n, "object": "model", "owned_by": "google", "description": f"[{force_acc}] {c['desc']}"})
-                else:
-                    for n, c in MODELS.items():
-                        models_list.append({"id": f"auto/{n}", "object": "model", "owned_by": "google", "description": f"[Auto-routed] {c['desc']}"})
-                    for acc in CONFIG.get("accounts", []):
+                for n, c in MODELS.items():
+                    models_list.append({
+                        "id": n,
+                        "object": "model",
+                        "created": 1700000000,
+                        "owned_by": "google",
+                        "permission": [],
+                        "root": n,
+                        "parent": None,
+                        "description": f"[{force_acc}] {c['desc']}" if force_acc else c["desc"]
+                    })
+                
+                # If auto-routing, also offer auto/ and per-account prefixes
+                if not force_acc:
+                    for n, c in list(MODELS.items())[:6]:
+                        models_list.append({
+                            "id": f"auto/{n}",
+                            "object": "model",
+                            "created": 1700000000,
+                            "owned_by": "google",
+                            "permission": [],
+                            "root": n,
+                            "parent": None,
+                            "description": f"[Auto-routed] {c['desc']}"
+                        })
+                    for acc in get_all_accounts():
                         acc_name = acc.get("name")
-                        for n, c in MODELS.items():
-                            models_list.append({"id": f"{acc_name}/{n}", "object": "model", "owned_by": "google", "description": f"[{acc_name}] {c['desc']}"})
-                    for n, c in MODELS.items():
-                        models_list.append({"id": n, "object": "model", "created": 1700000000, "owned_by": "google", "description": c["desc"]})
+                        if acc_name:
+                            for n, c in list(MODELS.items())[:3]:
+                                models_list.append({
+                                    "id": f"{acc_name}/{n}",
+                                    "object": "model",
+                                    "created": 1700000000,
+                                    "owned_by": "google",
+                                    "permission": [],
+                                    "root": n,
+                                    "parent": None,
+                                    "description": f"[{acc_name}] {c['desc']}"
+                                })
                     
                 self.send_json({"object": "list", "data": models_list})
-            elif self.path.startswith("/v1beta/models"):
+            elif clean_path.startswith("/v1beta/models") or clean_path.startswith("/models/"):
                 self.send_json({"models": [
                     {"name": f"models/{n}", "displayName": n, "description": c["desc"],
                      "supportedGenerationMethods": ["generateContent", "streamGenerateContent"]}
                     for n, c in MODELS.items()
                 ]})
-            elif self.path == "/":
-                self.send_json({"status": "ok", "version": __version__, "models": list(MODELS.keys())})
             else:
                 self.send_json({"error": "not found"}, 404)
         except (BrokenPipeError, ConnectionResetError):
@@ -250,9 +293,11 @@ class GeminiHandler(BaseHTTPRequestHandler):
 
     def do_DELETE(self):
         try:
-            if self.path.startswith("/api/accounts?name="):
-                name = urllib.parse.unquote(self.path.split("=")[1])
-                if delete_account(name):
+            clean_path = self.path.split("?")[0].rstrip("/")
+            if clean_path == "/api/accounts" and "?" in self.path:
+                qs = urllib.parse.parse_qs(self.path.split("?", 1)[1])
+                name = qs.get("name", [""])[0]
+                if name and delete_account(name):
                     self.send_response(200)
                     self.end_headers()
                 else:
@@ -263,7 +308,11 @@ class GeminiHandler(BaseHTTPRequestHandler):
             
     def do_POST(self):
         try:
-            if self.path == "/api/sync-cookies":
+            clean_path = self.path.split("?")[0].rstrip("/")
+            if not clean_path:
+                clean_path = "/"
+                
+            if clean_path == "/api/sync-cookies":
                 length = int(self.headers.get("Content-Length", 0))
                 payload = json.loads(self.rfile.read(length))
                 msg = handle_extension_sync(payload)
@@ -271,14 +320,13 @@ class GeminiHandler(BaseHTTPRequestHandler):
                 self.wfile.write(json.dumps({"message": msg}).encode("utf-8"))
                 return
                 
-            if self.path == "/api/config":
+            if clean_path == "/api/config":
                 try:
                     length = int(self.headers.get("Content-Length", 0))
                     payload = json.loads(self.rfile.read(length))
                     if "temporary_chats" in payload:
                         CONFIG["temporary_chats"] = bool(payload["temporary_chats"])
                         
-                        # Also save to config.json if it exists
                         try:
                             if os.path.exists("config.json"):
                                 with open("config.json", "r") as f:
@@ -295,25 +343,25 @@ class GeminiHandler(BaseHTTPRequestHandler):
                     self.send_json({"error": str(e)}, 400)
                 return
                 
-            if self.path == "/api/request-sync":
+            if clean_path == "/api/request-sync":
                 request_sync()
                 self.send_json({"status": "success", "message": "Sync flag set. Extension will sync on next ping."})
                 return
                 
             is_auth, force_acc = self._authenticate()
-            if self.path.startswith("/v1") and not is_auth:
+            if not is_auth:
                 self.send_json({"error": {"message": "invalid api key"}}, 401)
                 return
             set_current_account(force_acc)
             
             body = self._read_request_body()
-            if self.path == "/v1/chat/completions":
+            if clean_path in ("/v1/chat/completions", "/chat/completions"):
                 self._handle_chat(body, force_acc)
-            elif self.path == "/v1/responses":
+            elif clean_path in ("/v1/responses", "/responses"):
                 self._handle_responses(body)
-            elif ":streamGenerateContent" in self.path:
+            elif ":streamGenerateContent" in clean_path:
                 self._handle_google_generate(body, stream=True)
-            elif ":generateContent" in self.path:
+            elif ":generateContent" in clean_path:
                 self._handle_google_generate(body, stream=False)
             else:
                 self.send_json({"error": "not found"}, 404)
