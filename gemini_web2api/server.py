@@ -67,9 +67,12 @@ class GeminiHandler(BaseHTTPRequestHandler):
 
     def _start_sse(self):
         self.send_response(200)
-        self.send_header("Content-Type", "text/event-stream")
-        self.send_header("Cache-Control", "no-cache")
+        self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+        self.send_header("Cache-Control", "no-cache, no-transform")
+        self.send_header("Connection", "keep-alive")
         self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+        self.send_header("Access-Control-Allow-Headers", "*")
         self.end_headers()
 
     def _parse_body(self, body: bytes) -> dict:
@@ -213,6 +216,26 @@ class GeminiHandler(BaseHTTPRequestHandler):
             if clean_path in ("/dashboard", "/"):
                 self._set_html_headers()
                 self.wfile.write(DASHBOARD_HTML.encode("utf-8"))
+                return
+                
+            if clean_path in ("/v1", "/v1/"):
+                accounts = get_all_accounts()
+                self.send_json({
+                    "status": "ok",
+                    "service": "Gemini Web2API Gateway",
+                    "version": __version__,
+                    "active_accounts": len(accounts),
+                    "endpoints": {
+                        "models": "/v1/models",
+                        "chat": "/v1/chat/completions"
+                    },
+                    "note": "Gateway is online and ready for OpenAI-compatible clients."
+                })
+                return
+
+            if clean_path == "/favicon.ico":
+                self.send_response(204)
+                self.end_headers()
                 return
                 
             if clean_path == "/api/stats":
