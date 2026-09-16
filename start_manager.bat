@@ -11,17 +11,19 @@ echo.
 echo   1. First-time Setup (Install requirements)
 echo   2. Import / Refresh Cookies (from 'cookies' folder)
 echo   3. Show Active API Keys
-echo   4. Start Server ^& Web Dashboard
-echo   5. Exit
+echo   4. Start Server ^& Web Dashboard (Auto-clears stale port)
+echo   5. Run Diagnostic Self-Check
+echo   6. Exit
 echo.
 echo ===================================================
-set /p choice="Select an option (1-5): "
+set /p choice="Select an option (1-6): "
 
 if "%choice%"=="1" goto setup
 if "%choice%"=="2" goto import
 if "%choice%"=="3" goto show
 if "%choice%"=="4" goto run
-if "%choice%"=="5" goto eof
+if "%choice%"=="5" goto test
+if "%choice%"=="6" goto eof
 
 :setup
 cls
@@ -50,10 +52,22 @@ goto menu
 
 :run
 cls
+echo [Status] Checking port 10012 and clearing any stale background processes...
+for /f "tokens=5" %%a in ('netstat -aon ^| findstr ":10012" ^| findstr "LISTENING"') do (
+    echo [Status] Terminating stale process on port 10012 (PID: %%a)...
+    taskkill /f /pid %%a >nul 2>&1
+)
 echo [Status] Starting Gemini Web2API Server...
 echo [Info] Web Dashboard is live at: http://localhost:10012
 echo.
 python -m gemini_web2api --port 10012
+pause
+goto menu
+
+:test
+cls
+echo [Status] Running Gateway Diagnostic Self-Check...
+python -m gemini_web2api --test
 pause
 goto menu
 

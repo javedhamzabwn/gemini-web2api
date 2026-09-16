@@ -90,6 +90,59 @@ def show_apis():
         print("No accounts tracked yet. Run --import-cookies first.")
 
 
+def run_smoke_test(port=10012):
+    import urllib.request
+    import json
+    
+    base = f"http://127.0.0.1:{port}"
+    print(f"\n=== Running Gemini Web2API Diagnostic Self-Check ({base}) ===")
+    
+    # 1. Base /v1 status
+    try:
+        req = urllib.request.Request(f"{base}/v1", headers={"User-Agent": "SmokeTest/1.0"})
+        with urllib.request.urlopen(req, timeout=5) as res:
+            data = json.loads(res.read())
+            print(f" [PASS] Base /v1: Online (Status: {data.get('status')}, Active Accounts: {data.get('active_accounts', 0)})")
+    except Exception as e:
+        print(f" [FAIL] Base /v1: Unable to connect ({e})")
+        print(f"        Make sure the server is running on port {port} first.")
+        return False
+        
+    # 2. Models discovery
+    try:
+        req = urllib.request.Request(f"{base}/v1/models", headers={"Authorization": "Bearer sk-test-key"})
+        with urllib.request.urlopen(req, timeout=5) as res:
+            data = json.loads(res.read())
+            models = data.get("data", [])
+            print(f" [PASS] Models Discovery /v1/models: {len(models)} models available")
+    except Exception as e:
+        print(f" [FAIL] Models Discovery: {e}")
+        return False
+
+    # 3. Live chat completion
+    try:
+        payload = json.dumps({
+            "model": "gemini-3.8-flash",
+            "messages": [{"role": "user", "content": "Respond with the single word: READY"}],
+            "stream": False
+        }).encode()
+        req = urllib.request.Request(
+            f"{base}/v1/chat/completions",
+            headers={"Content-Type": "application/json", "Authorization": "Bearer sk-test-key"},
+            data=payload
+        )
+        with urllib.request.urlopen(req, timeout=30) as res:
+            data = json.loads(res.read())
+            content = data["choices"][0]["message"]["content"].strip()
+            print(f" [PASS] Chat Completion /v1/chat/completions: Received -> '{content}'")
+    except Exception as e:
+        print(f" [FAIL] Chat Completion: {e}")
+        return False
+
+    print("\n[SUCCESS] All checks passed! Gateway is fully ready for OpenCode, Cline, Cursor, and FreeLLMAPI.\n")
+    return True
+
+
 def main():
     parser = argparse.ArgumentParser(description="Gemini Web to OpenAI API")
     parser.add_argument("--port", type=int, default=None)
@@ -99,6 +152,7 @@ def main():
     parser.add_argument("--add-account", action="store_true", help="Interactively add a new Gemini account to config")
     parser.add_argument("--import-cookies", type=str, metavar="FOLDER", help="Batch import all .json cookie files from a folder")
     parser.add_argument("--show-apis", action="store_true", help="Show all currently active API keys and their accounts")
+    parser.add_argument("--test", action="store_true", help="Run local diagnostic smoke test against running gateway")
     parser.add_argument("--version", action="version", version=f"gemini-web2api {__version__}")
     args = parser.parse_args()
 
@@ -122,6 +176,10 @@ def main():
         CONFIG["accounts"] = []
         save_config(config_path)
 
+    if args.test:
+        run_smoke_test(args.port or CONFIG.get("port", 10012))
+        return
+
     if args.show_apis:
         show_apis()
         return
@@ -142,7 +200,14 @@ def main():
         CONFIG["proxy"] = args.proxy
 
     port = CONFIG["port"]
-    server = ThreadedServer((CONFIG["host"], port), GeminiHandler)
+    try:
+        server = ThreadedServer((CONFIG["host"], port), GeminiHandler)
+    except OSError as e:
+        if getattr(e, "winerror", None) == 10048 or getattr(e, "errno", None) == 98 or "10048" in str(e):
+            print(f"\n[!] Error: Port {port} is already in use by another process.")
+            print(f"    To auto-clear port {port}, run 'start_manager.bat' (Option 4) or terminate the existing process.\n")
+            return
+        raise
     
     accounts = get_all_accounts()
     accounts_count = len(accounts)
