@@ -1,0 +1,25 @@
+__pycache__/
+*.py[cod]
+*$py.class
+venv/
+.venv/
+
+# Local sensitive data - NEVER COMMIT
+cookies/*.json
+!cookies/.gitkeep
+!cookies/cookies.json
+gemini-auth.json
+cookie.txt
+cookie.json
+logs/
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+*.log
+.env
+.idea
+.vscode
+.DS_Store
+Thumbs.db
+avatar.png
