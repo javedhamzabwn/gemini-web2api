@@ -143,6 +143,22 @@ def run_smoke_test(port=10012):
     return True
 
 
+def kill_stale_port(port):
+    import subprocess
+    try:
+        out = subprocess.check_output(f'netstat -ano | findstr :{port}', shell=True, stderr=subprocess.DEVNULL).decode()
+        current_pid = os.getpid()
+        for line in out.splitlines():
+            if 'LISTENING' in line:
+                parts = line.strip().split()
+                pid = int(parts[-1])
+                if pid != current_pid and pid > 0:
+                    print(f"[*] Auto-clearing stale process on port {port} (PID: {pid})...")
+                    subprocess.run(f'taskkill /F /PID {pid}', shell=True, capture_output=True)
+    except Exception:
+        pass
+
+
 def main():
     parser = argparse.ArgumentParser(description="Gemini Web to OpenAI API")
     parser.add_argument("--port", type=int, default=None)
@@ -200,12 +216,13 @@ def main():
         CONFIG["proxy"] = args.proxy
 
     port = CONFIG["port"]
+    kill_stale_port(port)
+    
     try:
         server = ThreadedServer((CONFIG["host"], port), GeminiHandler)
     except OSError as e:
         if getattr(e, "winerror", None) == 10048 or getattr(e, "errno", None) == 98 or "10048" in str(e):
-            print(f"\n[!] Error: Port {port} is already in use by another process.")
-            print(f"    To auto-clear port {port}, run 'start_manager.bat' (Option 4) or terminate the existing process.\n")
+            print(f"\n[!] Error: Port {port} is already in use by another process.\n")
             return
         raise
     

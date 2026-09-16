@@ -11,7 +11,7 @@ echo.
 echo   1. First-time Setup (Install requirements)
 echo   2. Import / Refresh Cookies (from 'cookies' folder)
 echo   3. Show Active API Keys
-echo   4. Start Server ^& Web Dashboard (Auto-clears stale port)
+echo   4. Start Server and Web Dashboard
 echo   5. Run Diagnostic Self-Check
 echo   6. Exit
 echo.
@@ -52,11 +52,6 @@ goto menu
 
 :run
 cls
-echo [Status] Checking port 10012 and clearing any stale background processes...
-for /f "tokens=5" %%a in ('netstat -aon ^| findstr ":10012" ^| findstr "LISTENING"') do (
-    echo [Status] Terminating stale process on port 10012 (PID: %%a)...
-    taskkill /f /pid %%a >nul 2>&1
-)
 echo [Status] Starting Gemini Web2API Server...
 echo [Info] Web Dashboard is live at: http://localhost:10012
 echo.
