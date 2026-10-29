@@ -18,6 +18,8 @@ from .database import get_all_accounts
 from .admin import verify_all_accounts, get_stats, delete_account, handle_extension_sync, request_sync, get_sync_status
 from .dashboard_html import DASHBOARD_HTML
 from . import __version__
+from .claude_adapter import claude_messages_to_prompt, build_claude_response, claude_stream_events
+from .deep_research import DeepResearchEngine
 
 
 def _usage(prompt: str, text: str) -> dict:
@@ -303,6 +305,18 @@ class GeminiHandler(BaseHTTPRequestHandler):
                                 })
                     
                 self.send_json({"object": "list", "data": models_list})
+                return
+
+            if clean_path in ("/claude/v1/models", "/v1/models/claude"):
+                claude_models = []
+                for n, c in MODELS.items():
+                    claude_models.append({
+                        "id": n,
+                        "type": "model",
+                        "created_at": "2024-01-01T00:00:00Z",
+                        "display_name": c["desc"]
+                    })
+                self.send_json({"data": claude_models})
             elif clean_path.startswith("/v1beta/models") or clean_path.startswith("/models/"):
                 self.send_json({"models": [
                     {"name": f"models/{n}", "displayName": n, "description": c["desc"],
@@ -311,7 +325,7 @@ class GeminiHandler(BaseHTTPRequestHandler):
                 ]})
             else:
                 self.send_json({"error": "not found"}, 404)
-        except (BrokenPipeError, ConnectionResetError):
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
             pass
 
     def do_DELETE(self):
@@ -380,6 +394,12 @@ class GeminiHandler(BaseHTTPRequestHandler):
             body = self._read_request_body()
             if clean_path in ("/v1/chat/completions", "/chat/completions"):
                 self._handle_chat(body, force_acc)
+            elif clean_path in ("/v1/messages", "/claude/v1/messages", "/messages"):
+                self._handle_claude_messages(body, force_acc)
+            elif clean_path in ("/v1/messages/count_tokens", "/claude/v1/messages/count_tokens"):
+                self._handle_claude_count_tokens(body)
+            elif clean_path in ("/gemini/v1beta/interactions", "/interactions"):
+                self._handle_deep_research(body, force_acc)
             elif clean_path in ("/v1/responses", "/responses"):
                 self._handle_responses(body)
             elif ":streamGenerateContent" in clean_path:
@@ -388,7 +408,7 @@ class GeminiHandler(BaseHTTPRequestHandler):
                 self._handle_google_generate(body, stream=False)
             else:
                 self.send_json({"error": "not found"}, 404)
-        except (BrokenPipeError, ConnectionResetError):
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
             pass
 
     # ─── /v1/chat/completions ─────────────────────────────────────────────────
@@ -418,6 +438,10 @@ class GeminiHandler(BaseHTTPRequestHandler):
         model_name, model_id, think_mode, err, extra_fields = resolve_model(req_model)
         if err:
             self.send_json({"error": {"message": err}}, 400)
+            return
+
+        if model_name in ("deep-research-pro-preview-12-2025", "gemini-deep-research", "deep-research"):
+            self._handle_chat_deep_research(req, model_name, cid, force_account)
             return
 
         tools = req.get("tools")
@@ -456,7 +480,7 @@ class GeminiHandler(BaseHTTPRequestHandler):
                 self.wfile.write(f"data: {json.dumps(end)}\n\n".encode())
                 self.wfile.write(b"data: [DONE]\n\n")
                 self.wfile.flush()
-            except (BrokenPipeError, ConnectionResetError):
+            except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
                 pass
             except Exception as e:
                 log(f"Stream error: {e}")
@@ -811,7 +835,7 @@ class GeminiHandler(BaseHTTPRequestHandler):
                 }
                 self.wfile.write(f"data: {json.dumps(final_chunk, ensure_ascii=False)}\n\n".encode())
                 self.wfile.flush()
-            except (BrokenPipeError, ConnectionResetError):
+            except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
                 pass
             except Exception as e:
                 log(f"Google stream error: {e}")
@@ -861,6 +885,221 @@ class GeminiHandler(BaseHTTPRequestHandler):
             self.wfile.flush()
         else:
             self.send_json(response_obj)
+
+
+
+    # ─── /v1/messages & /claude/v1/messages (Anthropic Claude API) ───────────────────
+
+    def _handle_claude_messages(self, body: bytes, auth_force_acc: str = None):
+        req = self._parse_body(body)
+        if req is None:
+            self.send_json({"type": "error", "error": {"type": "invalid_request_error", "message": "invalid JSON body"}}, 400)
+            return
+
+        req_model = req.get("model", CONFIG["default_model"])
+        force_account = auth_force_acc
+        if "/" in req_model:
+            parts = req_model.split("/", 1)
+            if not force_account and parts[0] != "auto":
+                force_account = parts[0]
+            req_model = parts[1]
+
+        try:
+            set_current_account(force_account)
+        except ValueError as e:
+            self.send_json({"type": "error", "error": {"type": "invalid_request_error", "message": str(e)}}, 400)
+            return
+
+        model_name, model_id, think_mode, err, extra_fields = resolve_model(req_model)
+        if err:
+            self.send_json({"type": "error", "error": {"type": "invalid_request_error", "message": err}}, 400)
+            return
+
+        # Support Claude thinking configuration: {"type": "enabled", "budget_tokens": ...}
+        thinking_cfg = req.get("thinking")
+        if isinstance(thinking_cfg, dict) and thinking_cfg.get("type") == "enabled":
+            think_mode = 0
+            if model_id == 1:
+                model_id = 2
+
+        prompt, images, tool_defs = claude_messages_to_prompt(req)
+        if not prompt.strip():
+            self.send_json({"type": "error", "error": {"type": "invalid_request_error", "message": "no valid content in messages"}}, 400)
+            return
+
+        stream = req.get("stream", False)
+
+        if stream and not tool_defs:
+            try:
+                self._start_sse()
+                for ev_name, ev_data in claude_stream_events(model_name, generate_stream(prompt, model_id, think_mode, file_refs=None, extra_fields=extra_fields, images=images), prompt_len=len(prompt), tool_defs=tool_defs):
+                    self.wfile.write(f"event: {ev_name}\ndata: {json.dumps(ev_data, ensure_ascii=False)}\n\n".encode())
+                    self.wfile.flush()
+            except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+                pass
+            except Exception as e:
+                log(f"Claude stream error: {e}")
+                err_ev = {"type": "error", "error": {"type": "api_error", "message": str(e)}}
+                try:
+                    self.wfile.write(f"event: error\ndata: {json.dumps(err_ev)}\n\n".encode())
+                    self.wfile.flush()
+                except Exception:
+                    pass
+            return
+
+        # Non-streaming or streaming with tools
+        try:
+            text = generate(prompt, model_id, think_mode, file_refs=None, extra_fields=extra_fields, images=images)
+        except Exception as e:
+            self.send_json({"type": "error", "error": {"type": "api_error", "message": f"upstream error: {e}"}}, 502)
+            return
+
+        if stream:
+            try:
+                self._start_sse()
+                def single_gen():
+                    if text:
+                        yield text
+                for ev_name, ev_data in claude_stream_events(model_name, single_gen(), prompt_len=len(prompt), tool_defs=tool_defs):
+                    self.wfile.write(f"event: {ev_name}\ndata: {json.dumps(ev_data, ensure_ascii=False)}\n\n".encode())
+                    self.wfile.flush()
+            except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+                pass
+            return
+
+        response_obj = build_claude_response(model_name, text, tool_defs=tool_defs, prompt_len=len(prompt))
+        self.send_json(response_obj)
+
+    def _handle_claude_count_tokens(self, body: bytes):
+        req = self._parse_body(body) or {}
+        prompt, _, _ = claude_messages_to_prompt(req)
+        tokens = max(1, len(prompt) // 4)
+        self.send_json({"input_tokens": tokens})
+
+    # ─── /gemini/v1beta/interactions & Deep Research ─────────────────────────
+
+    def _handle_deep_research(self, body: bytes, auth_force_acc: str = None):
+        req = self._parse_body(body)
+        if req is None:
+            self.send_json({"error": {"message": "invalid JSON"}}, 400)
+            return
+
+        topic = req.get("input") or req.get("topic") or req.get("prompt")
+        if not topic and req.get("messages"):
+            for m in reversed(req.get("messages", [])):
+                if m.get("role") == "user":
+                    topic = m.get("content")
+                    break
+
+        if not topic:
+            self.send_json({"error": {"message": "missing input / topic for deep research"}}, 400)
+            return
+
+        language = req.get("language", "English")
+        stream = req.get("stream", True)
+        model = req.get("model") or req.get("agent") or "gemini-3.8-flash-thinking"
+
+        force_account = auth_force_acc
+        try:
+            set_current_account(force_account)
+        except ValueError as e:
+            self.send_json({"error": {"message": str(e)}}, 400)
+            return
+
+        engine = DeepResearchEngine(model_name=model)
+
+        if stream:
+            self._start_sse()
+            try:
+                for event in engine.stream_research(topic, language=language):
+                    self.wfile.write(f"data: {json.dumps(event, ensure_ascii=False)}\n\n".encode())
+                    self.wfile.flush()
+                self.wfile.write(b"data: [DONE]\n\n")
+                self.wfile.flush()
+            except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+                pass
+            except Exception as e:
+                log(f"DeepResearch stream error: {e}")
+                err_event = {"status": "failed", "error": str(e)}
+                try:
+                    self.wfile.write(f"data: {json.dumps(err_event)}\n\n".encode())
+                    self.wfile.flush()
+                except Exception:
+                    pass
+        else:
+            final_event = None
+            for event in engine.stream_research(topic, language=language):
+                if event.get("status") == "completed":
+                    final_event = event
+                    break
+            if final_event:
+                self.send_json(final_event)
+            else:
+                self.send_json({"status": "failed", "error": "Research failed to complete"}, 500)
+
+    def _handle_chat_deep_research(self, req: dict, model_name: str, cid: str, force_account: str = None):
+        topic = ""
+        for m in reversed(req.get("messages", [])):
+            if m.get("role") == "user":
+                c = m.get("content", "")
+                if isinstance(c, str):
+                    topic = c
+                elif isinstance(c, list):
+                    texts = [x.get("text", "") for x in c if isinstance(x, dict) and x.get("type") == "text"]
+                    topic = " ".join(texts)
+                break
+
+        if not topic:
+            topic = "Comprehensive technical analysis"
+
+        stream = req.get("stream", False)
+        engine = DeepResearchEngine(model_name="gemini-3.8-flash-thinking")
+
+        if stream:
+            self._start_sse()
+            try:
+                chunk_init = {"id": cid, "object": "chat.completion.chunk", "created": int(time.time()),
+                              "model": model_name, "choices": [{"index": 0, "delta": {"role": "assistant"}, "finish_reason": None}]}
+                self.wfile.write(f"data: {json.dumps(chunk_init, ensure_ascii=False)}\n\n".encode())
+                
+                final_report = ""
+                for ev in engine.stream_research(topic):
+                    if ev.get("status") == "in_progress":
+                        msg = f"⏳ **[Deep Research Progress - {ev.get('progress')}%]** {ev.get('message')}\n\n"
+                        chunk = {"id": cid, "object": "chat.completion.chunk", "created": int(time.time()),
+                                 "model": model_name, "choices": [{"index": 0, "delta": {"content": msg}, "finish_reason": None}]}
+                        self.wfile.write(f"data: {json.dumps(chunk, ensure_ascii=False)}\n\n".encode())
+                        self.wfile.flush()
+                    elif ev.get("status") == "completed":
+                        final_report = ev.get("final_report", "")
+
+                if final_report:
+                    header = "\n---\n# 📑 Master Deep Research Report\n\n"
+                    chunk_hdr = {"id": cid, "object": "chat.completion.chunk", "created": int(time.time()),
+                                 "model": model_name, "choices": [{"index": 0, "delta": {"content": header + final_report}, "finish_reason": None}]}
+                    self.wfile.write(f"data: {json.dumps(chunk_hdr, ensure_ascii=False)}\n\n".encode())
+                    self.wfile.flush()
+
+                chunk_finish = {"id": cid, "object": "chat.completion.chunk", "created": int(time.time()),
+                                "model": model_name, "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]}
+                self.wfile.write(f"data: {json.dumps(chunk_finish, ensure_ascii=False)}\n\n".encode())
+                self.wfile.write(b"data: [DONE]\n\n")
+                self.wfile.flush()
+            except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+                pass
+            return
+        else:
+            final_report = ""
+            for ev in engine.stream_research(topic):
+                if ev.get("status") == "completed":
+                    final_report = ev.get("final_report", "")
+                    break
+            self.send_json({
+                "id": cid, "object": "chat.completion", "created": int(time.time()),
+                "model": model_name,
+                "choices": [{"index": 0, "message": {"role": "assistant", "content": final_report}, "finish_reason": "stop"}],
+                "usage": {"prompt_tokens": len(topic)//4, "completion_tokens": len(final_report)//4, "total_tokens": (len(topic)+len(final_report))//4}
+            })
 
 
 class ThreadedServer(ThreadingMixIn, HTTPServer):

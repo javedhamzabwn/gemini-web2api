@@ -46,8 +46,9 @@ def log(msg: str):
         
         # Write to log file
         try:
-            os.makedirs("logs", exist_ok=True)
-            with open("logs/gemini_proxy.log", "a") as f:
+            from .database import LOGS_DIR
+            os.makedirs(LOGS_DIR, exist_ok=True)
+            with open(os.path.join(LOGS_DIR, "gemini_proxy.log"), "a", encoding="utf-8") as f:
                 f.write(formatted)
         except Exception:
             pass

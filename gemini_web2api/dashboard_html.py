@@ -3,18 +3,49 @@ DASHBOARD_HTML = """
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <title>Gemini Web2API Dashboard</title>
+    <title>Gemini Web2API Gateway Dashboard</title>
     <script src="https://cdn.tailwindcss.com"></script>
 </head>
 <body class="bg-gray-100 font-sans p-8">
     <div class="max-w-6xl mx-auto">
-        <h1 class="text-3xl font-bold mb-8 text-blue-600">Gemini Web2API Admin Dashboard</h1>
+        <div class="flex items-center justify-between mb-8">
+            <div>
+                <h1 class="text-3xl font-bold text-blue-600">Gemini Web2API Gateway</h1>
+                <p class="text-sm text-gray-500 mt-1">Universal Multi-Protocol Bridge: OpenAI • Anthropic Claude • Gemini Deep Research</p>
+            </div>
+            <span class="bg-blue-100 text-blue-800 text-xs font-semibold px-3 py-1 rounded-full border border-blue-200">v1.2.0 Universal</span>
+        </div>
         
+        <!-- Active Protocols Banner -->
+        <div class="bg-white p-5 rounded-lg shadow mb-8 border-l-4 border-blue-500">
+            <h2 class="text-base font-bold text-gray-800 mb-3 flex items-center">
+                <span class="mr-2">🔌</span> Supported Protocols & Endpoints
+            </h2>
+            <div class="grid grid-cols-1 md:grid-cols-3 gap-4 text-xs font-mono">
+                <div class="bg-gray-50 p-3 rounded border">
+                    <div class="font-bold text-gray-700 text-sm mb-1 font-sans">OpenAI Compatible</div>
+                    <div class="text-blue-600">POST /v1/chat/completions</div>
+                    <div class="text-gray-500 mt-1 font-sans">For Cline, OpenCode, Cursor, Chatbox</div>
+                </div>
+                <div class="bg-purple-50 p-3 rounded border border-purple-200">
+                    <div class="font-bold text-purple-900 text-sm mb-1 font-sans">Anthropic Claude</div>
+                    <div class="text-purple-600">POST /v1/messages</div>
+                    <div class="text-gray-500 mt-1 font-sans">For Claude Code, LangChain, Anthropic SDK</div>
+                </div>
+                <div class="bg-emerald-50 p-3 rounded border border-emerald-200">
+                    <div class="font-bold text-emerald-900 text-sm mb-1 font-sans">Gemini Deep Research</div>
+                    <div class="text-emerald-600">POST /gemini/v1beta/interactions</div>
+                    <div class="text-gray-500 mt-1 font-sans">Autonomous web-grounded research pipeline</div>
+                </div>
+            </div>
+        </div>
+
         <div class="grid grid-cols-1 md:grid-cols-2 gap-8 mb-8">
             <div class="bg-white p-6 rounded-lg shadow">
                 <h2 class="text-xl font-bold mb-4">Master Info</h2>
                 <p><strong>Master API Key:</strong> <span id="master-key" class="font-mono text-sm bg-gray-200 px-1 rounded">Loading...</span></p>
-                <p><strong>Total Accounts:</strong> <span id="total-accounts">0</span></p>
+                <p class="mt-2"><strong>Total Accounts:</strong> <span id="total-accounts" class="font-semibold text-blue-600">0</span></p>
+                <p class="mt-2 text-xs text-gray-500">Cloudflare Edge Worker available in <code class="bg-gray-100 px-1 rounded">./cloudflare/</code></p>
             </div>
             
             <div class="bg-white p-6 rounded-lg shadow flex items-center justify-between">
@@ -27,10 +58,10 @@ DASHBOARD_HTML = """
                     </label>
                 </div>
                 <div class="flex space-x-2">
-                    <button onclick="runHealthCheck()" class="bg-green-500 hover:bg-green-600 text-white font-bold py-2 px-4 rounded">
+                    <button onclick="runHealthCheck()" class="bg-green-500 hover:bg-green-600 text-white font-bold py-2 px-4 rounded text-sm transition-colors">
                         Verify All
                     </button>
-                    <button onclick="triggerAutoSync()" class="bg-blue-500 hover:bg-blue-600 text-white font-bold py-2 px-4 rounded">
+                    <button onclick="triggerAutoSync()" class="bg-blue-500 hover:bg-blue-600 text-white font-bold py-2 px-4 rounded text-sm transition-colors">
                         Force Extension Sync
                     </button>
                 </div>
@@ -58,29 +89,44 @@ DASHBOARD_HTML = """
                 </table>
             </div>
         </div>
+        
         <div class="bg-white p-6 rounded-lg shadow mb-8">
-            <div class="flex justify-between items-center mb-4">
+            <div class="flex justify-between items-center mb-4 flex-wrap gap-2">
                 <h2 class="text-xl font-bold">API Playground & Connection Test</h2>
-                <div class="flex items-center space-x-2">
+                <div class="flex items-center space-x-2 flex-wrap gap-2">
                     <label class="flex items-center space-x-1.5 text-xs text-gray-700 font-medium cursor-pointer bg-gray-100 px-2.5 py-1.5 rounded border border-gray-300">
                         <input type="checkbox" id="chat-thinking" class="form-checkbox h-3.5 w-3.5 text-blue-600 rounded">
                         <span>🧠 Extended thinking</span>
                     </label>
-                    <select id="chat-account" class="border rounded px-3 py-1 text-sm bg-gray-50 focus:outline-none focus:ring-2 focus:ring-blue-500">
+                    <select id="chat-protocol" class="border rounded px-2.5 py-1 text-sm bg-gray-50 focus:outline-none focus:ring-2 focus:ring-blue-500">
+                        <option value="openai">Protocol: OpenAI (/v1/chat/completions)</option>
+                        <option value="claude">Protocol: Claude (/v1/messages)</option>
+                        <option value="research">Protocol: Deep Research</option>
+                    </select>
+                    <select id="chat-account" class="border rounded px-2.5 py-1 text-sm bg-gray-50 focus:outline-none focus:ring-2 focus:ring-blue-500">
                         <option value="auto">Auto Load-Balance</option>
                     </select>
-                    <select id="chat-model" class="border rounded px-3 py-1 text-sm bg-gray-50 focus:outline-none focus:ring-2 focus:ring-blue-500">
-                        <option value="gemini-3.8-flash">3.8 Flash</option>
-                        <option value="gemini-3.5-flash-lite">3.5 Flash-Lite</option>
-                        <option value="gemini-3.1-pro">3.1 Pro</option>
+                    <select id="chat-model" class="border rounded px-2.5 py-1 text-sm bg-gray-50 focus:outline-none focus:ring-2 focus:ring-blue-500">
+                        <optgroup label="Gemini Native">
+                            <option value="gemini-3.8-flash">Gemini 3.8 Flash</option>
+                            <option value="gemini-3.8-flash-thinking">Gemini 3.8 Flash (Thinking)</option>
+                            <option value="gemini-3.5-flash-lite">Gemini 3.5 Flash-Lite</option>
+                            <option value="gemini-3.1-pro">Gemini 3.1 Pro</option>
+                            <option value="gemini-deep-research">Gemini Deep Research</option>
+                        </optgroup>
+                        <optgroup label="Claude Drop-in">
+                            <option value="claude-3-7-sonnet">Claude 3.7 Sonnet</option>
+                            <option value="claude-3-5-sonnet">Claude 3.5 Sonnet</option>
+                            <option value="claude-3-5-haiku">Claude 3.5 Haiku</option>
+                        </optgroup>
                     </select>
                 </div>
             </div>
             <div id="chat-history" class="bg-gray-50 border p-4 rounded-lg h-64 overflow-y-auto mb-4 text-sm flex flex-col space-y-3">
-                <div class="text-gray-500 text-center italic">Send a message to test the API connection...</div>
+                <div class="text-gray-500 text-center italic">Send a message to test the API connection across OpenAI, Claude, or Deep Research...</div>
             </div>
             <div class="flex space-x-2">
-                <input type="text" id="chat-input" placeholder="Type a message..." class="flex-grow border rounded-lg px-4 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500" onkeypress="if(event.key === 'Enter') sendChatMessage()">
+                <input type="text" id="chat-input" placeholder="Type a message or research query..." class="flex-grow border rounded-lg px-4 py-2 focus:outline-none focus:ring-2 focus:ring-blue-500" onkeypress="if(event.key === 'Enter') sendChatMessage()">
                 <button onclick="sendChatMessage()" id="chat-btn" class="bg-blue-600 hover:bg-blue-700 text-white font-bold py-2 px-6 rounded-lg transition-colors">
                     Send
                 </button>
@@ -111,14 +157,12 @@ DASHBOARD_HTML = """
                 }
                 
                 data.accounts.forEach(acc => {
-                    // Populate dropdown
                     const option = document.createElement('option');
                     option.value = acc.api_key;
                     option.textContent = `Force: ${acc.name}`;
                     if (currentSelection === acc.api_key) option.selected = true;
                     accountDropdown.appendChild(option);
 
-                    // Populate table
                     const statusClass = acc.status === "Ready" ? "text-green-600 font-bold" : "text-red-600 font-bold";
                     const tr = document.createElement('tr');
                     tr.className = "border-b hover:bg-gray-50";
@@ -200,16 +244,14 @@ DASHBOARD_HTML = """
             const btn = document.getElementById('chat-btn');
             const history = document.getElementById('chat-history');
             const text = input.value.trim();
-            const masterKey = document.getElementById('master-key').textContent;
+            const protocol = document.getElementById('chat-protocol').value;
             const selectedModel = document.getElementById('chat-model').value;
             const selectedAccount = document.getElementById('chat-account').value;
             
             if (!text) return;
             
-            // Remove placeholder if it exists
             if (chatMessages.length === 0) history.innerHTML = '';
             
-            // Add user message to UI
             input.value = '';
             input.disabled = true;
             btn.disabled = true;
@@ -218,75 +260,81 @@ DASHBOARD_HTML = """
             history.innerHTML += `<div class="self-end bg-blue-100 text-blue-900 rounded-lg py-2 px-4 max-w-[80%]">${text.replace(/</g, "&lt;")}</div>`;
             history.scrollTop = history.scrollHeight;
             
-            // Add bot thinking bubble
             const botId = "bot-msg-" + Date.now();
-            history.innerHTML += `<div class="self-start bg-gray-200 text-gray-800 rounded-lg py-2 px-4 max-w-[80%] whitespace-pre-wrap" id="${botId}">...</div>`;
+            history.innerHTML += `<div class="self-start bg-gray-200 text-gray-800 rounded-lg py-2 px-4 max-w-[80%] whitespace-pre-wrap" id="${botId}">⏳ Connecting via ${protocol.toUpperCase()}...</div>`;
             history.scrollTop = history.scrollHeight;
             const botBubble = document.getElementById(botId);
             
             try {
                 const authToken = selectedAccount === "auto" ? "sk-gemini-auto" : selectedAccount;
                 let modelToUse = selectedModel;
-                if (document.getElementById('chat-thinking')?.checked) {
+                if (document.getElementById('chat-thinking')?.checked && !modelToUse.includes("thinking")) {
                     modelToUse += "@think=0";
                 }
                 
-                const response = await fetch('/v1/chat/completions', {
+                let endpoint = '/v1/chat/completions';
+                let payload = {};
+                
+                if (protocol === 'claude') {
+                    endpoint = '/v1/messages';
+                    payload = {
+                        model: modelToUse,
+                        messages: chatMessages,
+                        max_tokens: 4096,
+                        stream: false
+                    };
+                } else if (protocol === 'research') {
+                    endpoint = '/gemini/v1beta/interactions';
+                    payload = {
+                        input: text,
+                        model: modelToUse,
+                        stream: false
+                    };
+                } else {
+                    payload = {
+                        model: modelToUse,
+                        messages: chatMessages,
+                        stream: false
+                    };
+                }
+                
+                const response = await fetch(endpoint, {
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/json',
                         'Authorization': 'Bearer ' + authToken
                     },
-                    body: JSON.stringify({
-                        model: modelToUse,
-                        messages: chatMessages,
-                        stream: true
-                    })
+                    body: JSON.stringify(payload)
                 });
                 
-                if (!response.ok) {
-                    const err = await response.json();
-                    throw new Error(err.error?.message || response.statusText);
-                }
+                const resData = await response.json();
+                let reply = "";
                 
-                const reader = response.body.getReader();
-                const decoder = new TextDecoder("utf-8");
-                botBubble.textContent = "";
-                let botFullText = "";
-                
-                while (true) {
-                    const {done, value} = await reader.read();
-                    if (done) break;
-                    const chunk = decoder.decode(value);
-                    const lines = chunk.split('\\n');
-                    for (const line of lines) {
-                        if (line.startsWith('data: ') && line !== 'data: [DONE]') {
-                            try {
-                                const data = JSON.parse(line.substring(6));
-                                const token = data.choices[0].delta?.content || "";
-                                botFullText += token;
-                                botBubble.textContent = botFullText;
-                                history.scrollTop = history.scrollHeight;
-                            } catch(e) {}
-                        }
+                if (protocol === 'claude') {
+                    if (resData.content && Array.isArray(resData.content)) {
+                        reply = resData.content.map(b => b.text || (b.thinking ? `[Thinking]: ${b.thinking}` : "")).filter(Boolean).join("\\n");
+                    } else if (resData.error) {
+                        reply = "Error: " + JSON.stringify(resData.error);
                     }
+                } else if (protocol === 'research') {
+                    reply = resData.final_report || (resData.outputs && resData.outputs[0]?.text) || JSON.stringify(resData, null, 2);
+                } else {
+                    reply = resData.choices?.[0]?.message?.content || resData.error?.message || "No response received";
                 }
-                chatMessages.push({role: "assistant", content: botFullText});
                 
-            } catch (error) {
-                botBubble.textContent = "Error: " + error.message;
-                botBubble.className = "self-start bg-red-100 text-red-800 rounded-lg py-2 px-4 max-w-[80%]";
-                chatMessages.pop(); // remove user message so they can try again
+                botBubble.textContent = reply;
+                chatMessages.push({role: "assistant", content: reply});
+            } catch (err) {
+                botBubble.textContent = "Error: " + err.message;
             } finally {
                 input.disabled = false;
                 btn.disabled = false;
                 input.focus();
+                history.scrollTop = history.scrollHeight;
             }
         }
 
-        // Auto-refresh stats every 5 seconds
-        setInterval(loadStats, 5000);
-        loadStats();
+        window.onload = loadStats;
     </script>
 </body>
 </html>

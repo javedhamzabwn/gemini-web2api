@@ -2,10 +2,12 @@ import sqlite3
 import os
 import time
 
-DB_PATH = "logs/gemini.db"
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+LOGS_DIR = os.path.join(BASE_DIR, "logs")
+DB_PATH = os.path.join(LOGS_DIR, "gemini.db")
 
 def get_connection():
-    os.makedirs("logs", exist_ok=True)
+    os.makedirs(LOGS_DIR, exist_ok=True)
     conn = sqlite3.connect(DB_PATH, timeout=30.0)
     conn.execute("PRAGMA journal_mode=WAL")
     conn.row_factory = sqlite3.Row
@@ -114,3 +116,6 @@ def set_rate_limit(name, cooldown_until):
     ''', (cooldown_until, name))
     conn.commit()
     conn.close()
+
+# Initialize DB on module load
+init_db()

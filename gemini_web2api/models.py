@@ -62,6 +62,65 @@ MODELS = {
         "mode": 1, "think": 4,
         "desc": "Drop-in alias -> Gemini 3.8 Flash",
     },
+    # Anthropic Claude drop-in aliases
+    "claude-3-7-sonnet": {
+        "mode": 2, "think": 0,
+        "desc": "Drop-in alias -> Gemini 3.8 Flash Extended Thinking",
+    },
+    "claude-3-7-sonnet-20250219": {
+        "mode": 2, "think": 0,
+        "desc": "Drop-in alias -> Gemini 3.8 Flash Extended Thinking",
+    },
+    "claude-3-5-sonnet": {
+        "mode": 2, "think": 0,
+        "desc": "Drop-in alias -> Gemini 3.8 Flash Extended Thinking",
+    },
+    "claude-3-5-sonnet-20241022": {
+        "mode": 2, "think": 0,
+        "desc": "Drop-in alias -> Gemini 3.8 Flash Extended Thinking",
+    },
+    "claude-3-5-sonnet-20240620": {
+        "mode": 2, "think": 0,
+        "desc": "Drop-in alias -> Gemini 3.8 Flash Extended Thinking",
+    },
+    "claude-3-5-haiku": {
+        "mode": 6, "think": 4,
+        "desc": "Drop-in alias -> Gemini 3.5 Flash-Lite",
+    },
+    "claude-3-5-haiku-20241022": {
+        "mode": 6, "think": 4,
+        "desc": "Drop-in alias -> Gemini 3.5 Flash-Lite",
+    },
+    "claude-3-opus": {
+        "mode": 3, "think": 0, "extra": {31: 2, 80: 3},
+        "desc": "Drop-in alias -> Gemini 3.1 Pro Extended Thinking",
+    },
+    "claude-3-opus-20240229": {
+        "mode": 3, "think": 0, "extra": {31: 2, 80: 3},
+        "desc": "Drop-in alias -> Gemini 3.1 Pro Extended Thinking",
+    },
+    # Deep Research agent models
+    "deep-research-pro-preview-12-2025": {
+        "mode": 2, "think": 0,
+        "desc": "Autonomous Gemini Deep Research Agent",
+    },
+    "gemini-deep-research": {
+        "mode": 2, "think": 0,
+        "desc": "Autonomous Gemini Deep Research Agent",
+    },
+    "deep-research": {
+        "mode": 2, "think": 0,
+        "desc": "Autonomous Gemini Deep Research Agent",
+    },
+    # Frontier model aliases
+    "gemini-4-argon": {
+        "mode": 2, "think": 0,
+        "desc": "Frontier model preview",
+    },
+    "argon": {
+        "mode": 2, "think": 0,
+        "desc": "Frontier model preview",
+    },
 }
 
 

@@ -11,6 +11,9 @@ from urllib.parse import urlparse
 from .config import CONFIG
 from .gemini import load_cookie, make_sapisidhash, _get_ssl_ctx, log
 
+# Google internal Scotty upload authorization fallback
+DEFAULT_UPLOAD_AUTH = "Basic c2F2ZXM6cyNMdGhlNmxzd2F2b0RsN3J1d1U="
+
 
 def _get_page_tokens() -> dict:
     """Fetch WIZ_global_data tokens from Gemini page (Push-ID, X-Client-Pctx)."""
@@ -22,6 +25,9 @@ def _get_page_tokens() -> dict:
         headers["Cookie"] = cookie_str
     if sapisid:
         headers["Authorization"] = make_sapisidhash(sapisid)
+    else:
+        headers["Authorization"] = DEFAULT_UPLOAD_AUTH
+
     try:
         from .config import get_current_account
         account = get_current_account()
@@ -37,7 +43,7 @@ def _get_page_tokens() -> dict:
             resp = opener.open(req, timeout=30)
         else:
             resp = urllib.request.urlopen(req, context=_get_ssl_ctx(), timeout=30)
-        html = resp.read().decode()
+        html = resp.read().decode("utf-8", errors="ignore")
         tokens = {}
         for key, pattern in [
             ("push_id", r'"qKIAYe":"([^"]+)"'),
@@ -79,7 +85,7 @@ def detect_image_mime(image_bytes: bytes, fallback: str = "image/png") -> str:
         return "image/jpeg"
     if image_bytes.startswith((b"GIF87a", b"GIF89a")):
         return "image/gif"
-    if image_bytes.startswith(b"RIFF") and image_bytes[8:12] == b"WEBP":
+    if image_bytes.startswith(b"RIFF") and len(image_bytes) >= 12 and image_bytes[8:12] == b"WEBP":
         return "image/webp"
     if image_bytes.startswith(b"BM"):
         return "image/bmp"
@@ -114,12 +120,16 @@ def upload_image(image_bytes: bytes, filename: str = "image.png", mime_type: str
         "X-Goog-Upload-Protocol": "resumable",
         "X-Goog-Upload-Command": "start",
         "Content-Type": "application/x-www-form-urlencoded;charset=utf-8",
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        "Origin": "https://gemini.google.com",
+        "Referer": "https://gemini.google.com/",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
     }
     if cookie_str:
         start_headers["Cookie"] = cookie_str
     if sapisid:
         start_headers["Authorization"] = make_sapisidhash(sapisid)
+    else:
+        start_headers["Authorization"] = DEFAULT_UPLOAD_AUTH
 
     start_url = "https://content-push.googleapis.com/upload/"
     req = urllib.request.Request(start_url, data=b"", headers=start_headers, method="POST")
@@ -143,8 +153,8 @@ def upload_image(image_bytes: bytes, filename: str = "image.png", mime_type: str
     upload_headers = {
         "X-Goog-Upload-Command": "upload, finalize",
         "X-Goog-Upload-Offset": "0",
-        "Content-Type": "application/octet-stream",
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        "Content-Type": mime_type or "application/octet-stream",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
     }
 
     req2 = urllib.request.Request(upload_url, data=image_bytes, headers=upload_headers, method="POST")
@@ -153,12 +163,69 @@ def upload_image(image_bytes: bytes, filename: str = "image.png", mime_type: str
     else:
         resp2 = urllib.request.urlopen(req2, context=ctx, timeout=60)
 
-    file_ref = resp2.read().decode().strip()
+    file_ref = resp2.read().decode("utf-8", errors="ignore").strip()
     if not file_ref or not file_ref.startswith("/"):
         raise RuntimeError(f"Invalid file reference: {file_ref[:100]}")
 
-    log(f"Image uploaded: {filename} -> {file_ref[:50]}...")
+    log(f"Image uploaded successfully: {filename} -> {file_ref[:50]}...")
     return file_ref
+
+
+def upload_images(images: list) -> list:
+    """Upload list of images and return list of file references. Returns None if no images.
+    
+    Each item in images can be:
+    - (bytes, mime_type)
+    - (url_or_b64_str, mime_type)
+    - dict with Claude source format: {'type': 'image', 'source': {'data': '...', 'media_type': '...'}}
+    """
+    if not images:
+        return None
+    file_refs = []
+    for item in images:
+        data = None
+        mime = "image/png"
+        
+        if isinstance(item, tuple) and len(item) == 2:
+            raw_data, mime = item
+            if isinstance(raw_data, bytes):
+                data = raw_data
+            elif isinstance(raw_data, str):
+                if raw_data.startswith("http://") or raw_data.startswith("https://"):
+                    data = fetch_image_bytes(raw_data)
+                elif raw_data.startswith("data:"):
+                    # data URI: data:image/png;base64,....
+                    header, b64 = raw_data.split(",", 1)
+                    if ";base64" in header:
+                        mime = header.split(";")[0].replace("data:", "")
+                        data = base64.b64decode(b64)
+                else:
+                    try:
+                        data = base64.b64decode(raw_data)
+                    except Exception:
+                        data = fetch_image_bytes(raw_data)
+        elif isinstance(item, dict) and item.get("type") == "image":
+            source = item.get("source", {})
+            if source.get("type") == "base64":
+                data = base64.b64decode(source.get("data", ""))
+                mime = source.get("media_type", "image/png")
+        elif isinstance(item, bytes):
+            data = item
+            mime = detect_image_mime(data)
+
+        if not data:
+            log(f"Warning: skipped empty or unparseable image item: {str(item)[:50]}")
+            continue
+
+        mime = detect_image_mime(data, mime or "image/png")
+        try:
+            ref = upload_image(data, "image.png", mime)
+            file_refs.append(ref)
+        except Exception as e:
+            log(f"Warning: Image upload failed: {e}")
+            raise RuntimeError(f"image upload failed: {e}") from e
+
+    return file_refs if file_refs else None
 
 
 def fetch_image_bytes(url: str) -> bytes:

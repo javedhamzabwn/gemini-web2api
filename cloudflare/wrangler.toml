@@ -1,0 +1,10 @@
+name = "gemini-web2api"
+main = "worker.js"
+compatibility_date = "2026-10-01"
+
+[vars]
+DEFAULT_MODEL = "gemini-3.8-flash"
+API_KEYS = ""
+
+# Set your Gemini session cookie in Cloudflare Dashboard or via wrangler secret:
+# wrangler secret put COOKIE_STRING
