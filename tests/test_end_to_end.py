@@ -165,6 +165,25 @@ class TestClaudeAdapter(unittest.TestCase):
         has_tool_block = any(e[1].get("content_block", {}).get("type") == "tool_use" for e in events if e[0] == "content_block_start")
         self.assertTrue(has_tool_block)
 
+    def test_claude_sse_streaming_thinking(self):
+        def fake_text_stream():
+            yield "Here is the solution to your question."
+
+        events = list(claude_stream_events("claude-3-7-sonnet", fake_text_stream(), prompt_len=50, thinking_enabled=True))
+        
+        # Verify block 0 is thinking
+        block_starts = [e[1] for e in events if e[0] == "content_block_start"]
+        self.assertEqual(block_starts[0]["index"], 0)
+        self.assertEqual(block_starts[0]["content_block"]["type"], "thinking")
+        
+        # Verify block 1 is text
+        self.assertEqual(block_starts[1]["index"], 1)
+        self.assertEqual(block_starts[1]["content_block"]["type"], "text")
+        
+        # Verify message_stop is emitted
+        event_names = [e[0] for e in events]
+        self.assertIn("message_stop", event_names)
+
 
 class TestMultimodalUtils(unittest.TestCase):
     def test_detect_image_mime(self):
@@ -282,6 +301,34 @@ class TestServerEndpoints(unittest.TestCase):
             self.assertEqual(resp.status, 200)
             data = json.loads(resp.read().decode())
             self.assertEqual(data["content"][0]["text"], "Namespaced Claude route verified.")
+
+    @patch("gemini_web2api.server.generate_stream")
+    def test_claude_messages_streaming_dispatch(self, mock_stream):
+        def fake_stream():
+            yield "Streaming response token"
+
+        mock_stream.return_value = fake_stream()
+        
+        payload = json.dumps({
+            "model": "claude-3-7-sonnet",
+            "messages": [{"role": "user", "content": "Hello streaming!"}],
+            "stream": True,
+            "thinking": {"type": "enabled"}
+        }).encode()
+
+        req = urllib.request.Request(
+            f"http://127.0.0.1:{self.port}/v1/messages",
+            data=payload,
+            headers={"Content-Type": "application/json"}
+        )
+        with urllib.request.urlopen(req) as resp:
+            self.assertEqual(resp.status, 200)
+            self.assertEqual(resp.headers.get("Connection"), "close")
+            raw_body = resp.read().decode()
+            self.assertIn("event: ping", raw_body)
+            self.assertIn("event: message_start", raw_body)
+            self.assertIn("thinking", raw_body)
+            self.assertIn("event: message_stop", raw_body)
 
     @patch("gemini_web2api.deep_research.generate")
     def test_deep_research_interactions_dispatch(self, mock_research_generate):

@@ -3,7 +3,7 @@ import json
 import uuid
 import time
 import base64
-from typing import Tuple, List, Dict, Any, Optional
+from typing import Tuple, List, Dict, Any, Optional, Iterator
 
 from .tools import sanitize_extensions, parse_google_function_calls, parse_tool_calls
 from .multimodal import detect_image_mime
@@ -124,12 +124,18 @@ def claude_messages_to_prompt(req: dict) -> Tuple[str, List[Any], List[dict]]:
     return prompt, images, tool_defs
 
 
-def build_claude_response(model_name: str, text: str, tool_defs: list = None, prompt_len: int = 0) -> dict:
+def build_claude_response(model_name: str, text: str, tool_defs: list = None, prompt_len: int = 0, thinking_enabled: bool = False) -> dict:
     """Build Anthropic Claude non-streaming message response object."""
     msg_id = f"msg_{uuid.uuid4().hex[:24]}"
     content_blocks = []
     stop_reason = "end_turn"
     
+    if thinking_enabled:
+        content_blocks.append({
+            "type": "thinking",
+            "thinking": "Thinking through the user request...\n"
+        })
+
     if tool_defs and text:
         clean_text, tool_calls = parse_tool_calls(text)
         if not tool_calls:
@@ -181,8 +187,15 @@ def build_claude_response(model_name: str, text: str, tool_defs: list = None, pr
     }
 
 
-def claude_stream_events(model_name: str, text_generator, prompt_len: int = 0, tool_defs: list = None) -> Iterator[Tuple[str, dict]]:
-    """Yields (event_name, event_data) according to Anthropic Claude SSE streaming protocol."""
+def claude_stream_events(model_name: str, text_generator, prompt_len: int = 0, tool_defs: list = None, thinking_enabled: bool = False) -> Iterator[Tuple[str, dict]]:
+    """Yields (event_name, event_data) according to Anthropic Claude SSE streaming protocol.
+    
+    Ensures full compatibility with Claude Code CLI and modern agent frameworks:
+    - Emits thinking content blocks when thinking_enabled is True.
+    - Accurately splits clean_text and tool_use blocks when tool_defs are present.
+    - Guarantees strict closure of all open blocks (content_block_stop).
+    - Always terminates with message_delta(stop_reason) and message_stop.
+    """
     msg_id = f"msg_{uuid.uuid4().hex[:24]}"
     p_tokens = max(1, prompt_len // 4)
     
@@ -204,54 +217,111 @@ def claude_stream_events(model_name: str, text_generator, prompt_len: int = 0, t
         }
     }
 
-    # 2. content_block_start for text
-    yield "content_block_start", {
-        "type": "content_block_start",
-        "index": 0,
-        "content_block": {
-            "type": "text",
-            "text": ""
-        }
-    }
-
-    full_text = ""
     block_index = 0
 
-    for delta in text_generator:
-        if not delta:
-            continue
-        full_text += delta
+    # 2. If thinking is requested, emit thinking block first
+    if thinking_enabled:
+        yield "content_block_start", {
+            "type": "content_block_start",
+            "index": block_index,
+            "content_block": {
+                "type": "thinking",
+                "thinking": ""
+            }
+        }
         yield "content_block_delta", {
             "type": "content_block_delta",
             "index": block_index,
             "delta": {
-                "type": "text_delta",
-                "text": delta
+                "type": "thinking_delta",
+                "thinking": "Analyzing request...\n"
+            }
+        }
+        yield "content_block_stop", {
+            "type": "content_block_stop",
+            "index": block_index
+        }
+        block_index += 1
+
+    # 3. Stream text / handle tools
+    full_text = ""
+    stop_reason = "end_turn"
+
+    if not tool_defs:
+        # Standard streaming without tool definitions
+        yield "content_block_start", {
+            "type": "content_block_start",
+            "index": block_index,
+            "content_block": {
+                "type": "text",
+                "text": ""
             }
         }
 
-    # 3. content_block_stop
-    yield "content_block_stop", {
-        "type": "content_block_stop",
-        "index": block_index
-    }
+        for delta in text_generator:
+            if not delta:
+                continue
+            full_text += delta
+            yield "content_block_delta", {
+                "type": "content_block_delta",
+                "index": block_index,
+                "delta": {
+                    "type": "text_delta",
+                    "text": delta
+                }
+            }
 
-    stop_reason = "end_turn"
-    
-    if tool_defs and full_text:
-        clean_text, tool_calls = parse_tool_calls(full_text)
-        if not tool_calls:
-            clean_text, tool_calls = parse_google_function_calls(full_text)
-            
+        yield "content_block_stop", {
+            "type": "content_block_stop",
+            "index": block_index
+        }
+        block_index += 1
+    else:
+        # Tool-calling agent flow: buffer chunks to extract tool_calls cleanly
+        for delta in text_generator:
+            if delta:
+                full_text += delta
+
+        clean_text = full_text
+        tool_calls = []
+        if full_text:
+            clean_text, tool_calls = parse_tool_calls(full_text)
+            if not tool_calls:
+                clean_text, tool_calls = parse_google_function_calls(full_text)
+
+        # Output text block if any clean text exists or if no tool calls were made
+        if clean_text or not tool_calls:
+            yield "content_block_start", {
+                "type": "content_block_start",
+                "index": block_index,
+                "content_block": {
+                    "type": "text",
+                    "text": ""
+                }
+            }
+            if clean_text:
+                yield "content_block_delta", {
+                    "type": "content_block_delta",
+                    "index": block_index,
+                    "delta": {
+                        "type": "text_delta",
+                        "text": clean_text
+                    }
+                }
+            yield "content_block_stop", {
+                "type": "content_block_stop",
+                "index": block_index
+            }
+            block_index += 1
+
         if tool_calls:
             stop_reason = "tool_use"
             for tc in tool_calls:
-                block_index += 1
                 call_id = tc.get("id") or f"toolu_{uuid.uuid4().hex[:20]}"
                 fn = tc.get("function") or {}
                 name = fn.get("name") or tc.get("name", "")
                 raw_args = fn.get("arguments") or tc.get("arguments") or tc.get("args") or {}
-                args_str = json.dumps(raw_args) if not isinstance(raw_args, str) else raw_args
+                args_str = json.dumps(raw_args, ensure_ascii=False) if not isinstance(raw_args, str) else raw_args
 
                 yield "content_block_start", {
                     "type": "content_block_start",
@@ -274,6 +344,7 @@ def claude_stream_events(model_name: str, text_generator, prompt_len: int = 0, t
                     "type": "content_block_stop",
                     "index": block_index
                 }
+                block_index += 1
 
     c_tokens = max(1, len(full_text) // 4)
 

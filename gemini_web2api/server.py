@@ -67,15 +67,20 @@ class GeminiHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
-    def _start_sse(self):
+    def _start_sse(self, keep_alive: bool = True):
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream; charset=utf-8")
         self.send_header("Cache-Control", "no-cache, no-transform")
-        self.send_header("Connection", "keep-alive")
+        if keep_alive:
+            self.send_header("Connection", "keep-alive")
+        else:
+            self.send_header("Connection", "close")
         self.send_header("Access-Control-Allow-Origin", "*")
         self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
         self.send_header("Access-Control-Allow-Headers", "*")
         self.end_headers()
+        if not keep_alive:
+            self.close_connection = True
 
     def _parse_body(self, body: bytes) -> dict:
         try:
@@ -917,10 +922,15 @@ class GeminiHandler(BaseHTTPRequestHandler):
 
         # Support Claude thinking configuration: {"type": "enabled", "budget_tokens": ...}
         thinking_cfg = req.get("thinking")
+        thinking_enabled = False
         if isinstance(thinking_cfg, dict) and thinking_cfg.get("type") == "enabled":
+            thinking_enabled = True
             think_mode = 0
             if model_id == 1:
                 model_id = 2
+        elif "thinking" in req_model.lower():
+            thinking_enabled = True
+            think_mode = 0
 
         prompt, images, tool_defs = claude_messages_to_prompt(req)
         if not prompt.strip():
@@ -929,12 +939,32 @@ class GeminiHandler(BaseHTTPRequestHandler):
 
         stream = req.get("stream", False)
 
-        if stream and not tool_defs:
+        if stream:
             try:
-                self._start_sse()
-                for ev_name, ev_data in claude_stream_events(model_name, generate_stream(prompt, model_id, think_mode, file_refs=None, extra_fields=extra_fields, images=images), prompt_len=len(prompt), tool_defs=tool_defs):
+                self._start_sse(keep_alive=False)
+                # Send immediate keepalive/ping frame to Claude Code client
+                self.wfile.write(b": keepalive\n\nevent: ping\ndata: {\"type\": \"ping\"}\n\n")
+                self.wfile.flush()
+
+                if not tool_defs:
+                    gen = generate_stream(prompt, model_id, think_mode, file_refs=None, extra_fields=extra_fields, images=images)
+                else:
+                    text = generate(prompt, model_id, think_mode, file_refs=None, extra_fields=extra_fields, images=images)
+                    def text_gen():
+                        if text:
+                            yield text
+                    gen = text_gen()
+
+                for ev_name, ev_data in claude_stream_events(
+                    model_name,
+                    gen,
+                    prompt_len=len(prompt),
+                    tool_defs=tool_defs,
+                    thinking_enabled=thinking_enabled
+                ):
                     self.wfile.write(f"event: {ev_name}\ndata: {json.dumps(ev_data, ensure_ascii=False)}\n\n".encode())
                     self.wfile.flush()
+
             except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
                 pass
             except Exception as e:
@@ -945,29 +975,18 @@ class GeminiHandler(BaseHTTPRequestHandler):
                     self.wfile.flush()
                 except Exception:
                     pass
+            finally:
+                self.close_connection = True
             return
 
-        # Non-streaming or streaming with tools
+        # Non-streaming
         try:
             text = generate(prompt, model_id, think_mode, file_refs=None, extra_fields=extra_fields, images=images)
         except Exception as e:
             self.send_json({"type": "error", "error": {"type": "api_error", "message": f"upstream error: {e}"}}, 502)
             return
 
-        if stream:
-            try:
-                self._start_sse()
-                def single_gen():
-                    if text:
-                        yield text
-                for ev_name, ev_data in claude_stream_events(model_name, single_gen(), prompt_len=len(prompt), tool_defs=tool_defs):
-                    self.wfile.write(f"event: {ev_name}\ndata: {json.dumps(ev_data, ensure_ascii=False)}\n\n".encode())
-                    self.wfile.flush()
-            except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
-                pass
-            return
-
-        response_obj = build_claude_response(model_name, text, tool_defs=tool_defs, prompt_len=len(prompt))
+        response_obj = build_claude_response(model_name, text, tool_defs=tool_defs, prompt_len=len(prompt), thinking_enabled=thinking_enabled)
         self.send_json(response_obj)
 
     def _handle_claude_count_tokens(self, body: bytes):
