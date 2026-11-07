@@ -5,7 +5,7 @@ import urllib.request
 import ssl
 from .config import CONFIG, save_config, set_current_account, get_current_account
 from .gemini import _build_headers, _get_ssl_ctx
-from .database import get_all_accounts, add_or_update_account, delete_account_db
+from .database import get_all_accounts, add_or_update_account, delete_account_db, COOKIES_DIR, resolve_cookie_path
 
 def verify_all_accounts():
     results = []
@@ -86,68 +86,109 @@ def get_stats():
 def delete_account(name):
     return delete_account_db(name)
 
+def _extract_cookie_dict(cookie_str: str) -> dict:
+    if not cookie_str:
+        return {}
+    pairs = {}
+    for part in cookie_str.split(";"):
+        if "=" in part:
+            k, v = part.strip().split("=", 1)
+            pairs[k.strip()] = v.strip()
+    return pairs
+
+def _get_cookie_session_sig(cookie_str: str, sapisid: str = None) -> tuple:
+    cdict = _extract_cookie_dict(cookie_str)
+    psid = cdict.get("__Secure-1PSID") or cdict.get("__Secure-3PSID") or cdict.get("SID") or ""
+    sap = sapisid or cdict.get("SAPISID") or ""
+    return sap, psid
+
 def handle_extension_sync(payload):
-    """Handles auto-pushed cookies from the Chrome Extension across multiple browser profiles."""
-    auth_user = payload.get("auth_user")
+    """Handles auto-pushed cookies from the Chrome Extension across multiple browser profiles.
+    Guarantees no account is unintentionally overwritten or dropped."""
+    raw_auth_user = payload.get("auth_user")
+    auth_user = str(raw_auth_user).strip() if (raw_auth_user is not None and str(raw_auth_user).strip() not in ("", "None", "null")) else "0"
+    
     cookie = payload.get("cookie")
     xsrf = payload.get("xsrf_token")
     sapisid = payload.get("sapisid")
-    acc_name_req = payload.get("account_name")
+    acc_name_req = (payload.get("account_name") or "").strip() or None
     
     if not cookie or not xsrf:
-        raise ValueError("Missing cookie or xsrf_token")
+        raise ValueError("Missing required cookie or xsrf_token")
         
     accounts = get_all_accounts()
     target = None
+    
+    # Extract identity signature of incoming session
+    sap_in, psid_in = _get_cookie_session_sig(cookie, sapisid)
     
     # Priority 1: Match by explicitly requested account name
     if acc_name_req:
         target = next((a for a in accounts if a.get("name") == acc_name_req), None)
         
-    # Priority 2: Match by session fingerprint (SAPISID) AND auth_user
-    if not target and sapisid:
-        for a in accounts:
-            if str(a.get("auth_user")) == str(auth_user):
-                cf = a.get("cookie_file")
-                if cf and os.path.exists(cf):
-                    try:
-                        with open(cf, "r") as f:
-                            cdata = json.load(f)
-                            if cdata.get("sapisid") == sapisid:
-                                target = a
-                                break
-                    except:
-                        pass
-                        
-    # Priority 3: Fallback if only one account exists with this auth_user
+    # Priority 2: Match by session identity signature against existing saved cookies
     if not target and not acc_name_req:
-        matching_auth = [a for a in accounts if str(a.get("auth_user")) == str(auth_user)]
-        if len(matching_auth) == 1:
-            target = matching_auth[0]
-            
-    os.makedirs("cookies", exist_ok=True)
+        for a in accounts:
+            cf = resolve_cookie_path(a.get("cookie_file"))
+            if cf and os.path.exists(cf):
+                try:
+                    with open(cf, "r", encoding="utf-8") as f:
+                        content = f.read().strip()
+                    if content.startswith("{"):
+                        cdata = json.loads(content)
+                        exist_cookie = cdata.get("cookie", "")
+                        exist_sapisid = cdata.get("sapisid", "")
+                    else:
+                        exist_cookie = content
+                        exist_sapisid = ""
+                    
+                    exist_sap, exist_psid = _get_cookie_session_sig(exist_cookie, exist_sapisid)
+                    
+                    # Match condition: If PSID matches, it is definitely the same Google account!
+                    if psid_in and exist_psid and psid_in == exist_psid:
+                        target = a
+                        break
+                    # Or if SAPISID and auth_user match
+                    if sap_in and exist_sap and sap_in == exist_sap and str(a.get("auth_user") or "0") == str(auth_user):
+                        target = a
+                        break
+                except Exception:
+                    pass
+                    
+    # Priority 3 (SAFE): NEVER blindly overwrite an account just because auth_user matches!
+    # If no explicit name match and no session signature match, this is a distinct account.
     
+    os.makedirs(COOKIES_DIR, exist_ok=True)
+    
+    import uuid
     if target:
         acc_name = target["name"]
-        file_path = f"cookies/{acc_name}.json"
-        with open(file_path, "w") as f:
-            json.dump(payload, f)
-        add_or_update_account(acc_name, auth_user, file_path, xsrf, target["api_key"])
-        return f"Updated existing account {acc_name} (auth_user: {auth_user})"
+        file_path = os.path.join(COOKIES_DIR, f"{acc_name}.json")
+        with open(file_path, "w", encoding="utf-8") as f:
+            json.dump(payload, f, indent=2)
+        add_or_update_account(acc_name, auth_user, file_path, xsrf, target.get("api_key"))
+        return f"Updated existing account '{acc_name}' (auth_user: {auth_user})"
     else:
-        import uuid
         if acc_name_req:
             acc_name = acc_name_req
         else:
-            prefix = sapisid[:4].replace("/", "_").replace("+", "_") if sapisid else "p"
-            acc_name = f"AutoAcc_{prefix}_{auth_user}"
+            # Generate deterministic yet unique friendly name
+            prefix = (sap_in[:6] if sap_in else (psid_in[:6] if psid_in else uuid.uuid4().hex[:6])).replace("/", "_").replace("+", "_").replace("=", "")
+            base_name = f"Account_u{auth_user}_{prefix}"
+            existing_names = {a.get("name") for a in accounts}
+            acc_name = base_name
+            counter = 2
+            while acc_name in existing_names:
+                acc_name = f"{base_name}_{counter}"
+                counter += 1
             
-        file_path = f"cookies/{acc_name}.json"
-        with open(file_path, "w") as f:
-            json.dump(payload, f)
+        file_path = os.path.join(COOKIES_DIR, f"{acc_name}.json")
+        with open(file_path, "w", encoding="utf-8") as f:
+            json.dump(payload, f, indent=2)
+            
         api_key = f"sk-gemini-{acc_name}-{uuid.uuid4().hex[:8]}"
         add_or_update_account(acc_name, auth_user, file_path, xsrf, api_key)
-        return f"Created new account {acc_name} (auth_user: {auth_user})"
+        return f"Created new account '{acc_name}' (auth_user: {auth_user})"
 
 # Two-way terminal-to-extension bridge state
 _sync_requested = False

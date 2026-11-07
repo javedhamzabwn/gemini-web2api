@@ -141,10 +141,17 @@ async function performSync(baseUrl) {
     const payload = {
         cookie: cookieString,
         sapisid: selected.get("SAPISID").value,
-        auth_user: metadata.authUser,
+        auth_user: metadata.authUser || "0",
         xsrf_token: metadata.xsrfToken,
         gemini_bl: metadata.geminiBl
     };
+    
+    try {
+        const stored = await chrome.storage.local.get(["accountName"]);
+        if (stored && stored.accountName) {
+            payload.account_name = stored.accountName;
+        }
+    } catch(e) {}
     
     try {
         await fetch(`${baseUrl}/api/sync-cookies`, {

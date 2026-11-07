@@ -153,12 +153,12 @@ function getActiveGeminiAccount(tabs) {
       const url = new URL(tab.url || "");
       if (url.hostname !== "gemini.google.com") continue;
       const match = url.pathname.match(/^\/u\/(\d+)(?:\/|$)/);
-      return match ? match[1] : null;
+      return match ? match[1] : "0";
     } catch {
       // Ignore malformed or unavailable URLs.
     }
   }
-  return null;
+  return "0";
 }
 
 function chooseGeminiTab(tabs) {
@@ -438,8 +438,10 @@ syncProxyButton.addEventListener("click", async () => {
     // Send to local proxy
     const baseUrl = document.getElementById("proxy_url").value.replace(/\/+$/, "");
     
-    // Save URL for next time
-    try { chrome.storage.local.set({ proxyUrl: baseUrl }); } catch(e) {}
+    // Save URL and account name for next time
+    try { 
+        chrome.storage.local.set({ proxyUrl: baseUrl, accountName: accName || "" }); 
+    } catch(e) {}
     
     const response = await fetch(`${baseUrl}/api/sync-cookies`, {
         method: "POST",
@@ -461,13 +463,21 @@ syncProxyButton.addEventListener("click", async () => {
   }
 });
 
-// Load saved proxy URL on startup
+// Load saved proxy URL and account name on startup
 document.addEventListener("DOMContentLoaded", () => {
     try {
-        chrome.storage.local.get(["proxyUrl"], (result) => {
+        chrome.storage.local.get(["proxyUrl", "accountName"], (result) => {
             if (result.proxyUrl) {
                 document.getElementById("proxy_url").value = result.proxyUrl;
             }
+            if (result.accountName) {
+                document.getElementById("acc_name").value = result.accountName;
+            }
+        });
+        
+        document.getElementById("acc_name").addEventListener("input", (e) => {
+            const val = e.target.value.trim();
+            chrome.storage.local.set({ accountName: val });
         });
     } catch(e) {}
 });

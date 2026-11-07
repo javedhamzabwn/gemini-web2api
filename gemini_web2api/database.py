@@ -4,7 +4,27 @@ import time
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 LOGS_DIR = os.path.join(BASE_DIR, "logs")
+COOKIES_DIR = os.path.join(BASE_DIR, "cookies")
 DB_PATH = os.path.join(LOGS_DIR, "gemini.db")
+
+def resolve_cookie_path(cookie_file: str) -> str:
+    """Normalize and resolve cookie file path to an absolute path."""
+    if not cookie_file:
+        return ""
+    if os.path.isabs(cookie_file) and os.path.exists(cookie_file):
+        return cookie_file
+    # Try relative to BASE_DIR
+    candidate = os.path.join(BASE_DIR, cookie_file)
+    if os.path.exists(candidate):
+        return os.path.abspath(candidate)
+    # Try in COOKIES_DIR by filename
+    candidate = os.path.join(COOKIES_DIR, os.path.basename(cookie_file))
+    if os.path.exists(candidate):
+        return os.path.abspath(candidate)
+    if os.path.exists(cookie_file):
+        return os.path.abspath(cookie_file)
+    # Fallback to absolute path in COOKIES_DIR even if file doesn't exist yet
+    return os.path.abspath(os.path.join(COOKIES_DIR, os.path.basename(cookie_file)))
 
 def get_connection():
     os.makedirs(LOGS_DIR, exist_ok=True)
@@ -72,27 +92,37 @@ def get_all_accounts():
     conn.close()
     return rows
 
-def add_or_update_account(name, auth_user, cookie_file, xsrf_token, api_key):
+def add_or_update_account(name, auth_user, cookie_file, xsrf_token, api_key=None):
     conn = get_connection()
     c = conn.cursor()
     
-    c.execute("SELECT id FROM accounts WHERE name = ?", (name,))
+    resolved_cf = resolve_cookie_path(cookie_file) if cookie_file else None
+    
+    c.execute("SELECT id, api_key FROM accounts WHERE name = ?", (name,))
     existing = c.fetchone()
     
     if existing:
+        final_key = api_key or existing["api_key"]
         c.execute('''
             UPDATE accounts 
             SET auth_user=?, cookie_file=?, xsrf_token=?, api_key=?
             WHERE name=?
-        ''', (auth_user, cookie_file, xsrf_token, api_key, name))
+        ''', (auth_user, resolved_cf, xsrf_token, final_key, name))
     else:
+        import uuid
+        final_key = api_key or f"sk-gemini-{name}-{uuid.uuid4().hex[:8]}"
+        # Ensure final_key is unique across all accounts
+        c.execute("SELECT id FROM accounts WHERE api_key = ?", (final_key,))
+        if c.fetchone():
+            final_key = f"{final_key}-{uuid.uuid4().hex[:4]}"
+            
         c.execute('''
             INSERT INTO accounts (name, auth_user, cookie_file, xsrf_token, api_key, created_at)
             VALUES (?, ?, ?, ?, ?, ?)
-        ''', (name, auth_user, cookie_file, xsrf_token, api_key, time.time()))
+        ''', (name, auth_user, resolved_cf, xsrf_token, final_key, time.time()))
         
         account_id = c.lastrowid
-        c.execute("INSERT INTO account_state (account_id) VALUES (?)", (account_id,))
+        c.execute("INSERT OR IGNORE INTO account_state (account_id) VALUES (?)", (account_id,))
         
     conn.commit()
     conn.close()

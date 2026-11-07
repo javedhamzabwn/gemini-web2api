@@ -52,23 +52,30 @@ def generate_api_key(acc_name):
 def batch_import_accounts(config_path, folder_path):
     print(f"=== Batch Import Accounts from {folder_path} ===")
     if not os.path.exists(folder_path):
-        print(f"Error: Folder '{folder_path}' does not exist.")
-        return
+        from .database import BASE_DIR
+        candidate = os.path.join(BASE_DIR, folder_path)
+        if os.path.exists(candidate):
+            folder_path = candidate
+        else:
+            print(f"Error: Folder '{folder_path}' does not exist.")
+            return
         
     imported = 0
-    updated = 0
     for filename in os.listdir(folder_path):
         if filename.endswith(".json"):
-            filepath = os.path.join(folder_path, filename)
+            filepath = os.path.abspath(os.path.join(folder_path, filename))
             try:
-                with open(filepath, "r") as f:
+                with open(filepath, "r", encoding="utf-8") as f:
                     data = json.load(f)
                 
-                auth_user = data.get("auth_user") or None
+                auth_user = data.get("auth_user")
+                if auth_user is not None:
+                    auth_user = str(auth_user)
                 xsrf_token = data.get("xsrf_token") or None
                 acc_name = filename.replace(".json", "")
                 
-                add_or_update_account(acc_name, auth_user, filepath, xsrf_token, generate_api_key(acc_name))
+                # Pass None for api_key to preserve existing API key in DB if already present
+                add_or_update_account(acc_name, auth_user, filepath, xsrf_token, None)
                 imported += 1
                 print(f"Imported/Updated: {filename}")
             except Exception as e:

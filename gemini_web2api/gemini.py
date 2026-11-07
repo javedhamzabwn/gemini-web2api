@@ -26,6 +26,7 @@ except ImportError:
     HAS_CURL_CFFI = False
 
 from .config import CONFIG, get_current_account
+from .database import resolve_cookie_path
 
 _ssl_ctx = None
 _cookie_cache = {}
@@ -84,9 +85,10 @@ def _get_session():
 
 
 def load_cookie() -> tuple:
-    """Load cookie from file with mtime-based caching."""
+    """Load cookie from file with mtime-based caching and path resolution."""
     account = get_current_account()
-    cookie_file = account.get("cookie_file")
+    raw_cf = account.get("cookie_file")
+    cookie_file = resolve_cookie_path(raw_cf)
     if not cookie_file or not os.path.exists(cookie_file):
         return "", None
         
@@ -95,7 +97,7 @@ def load_cookie() -> tuple:
         mtime = os.path.getmtime(cookie_file)
         if mtime == cache_entry["mtime"] and cache_entry["str"]:
             return cache_entry["str"], cache_entry["sapisid"]
-        with open(cookie_file, "r") as f:
+        with open(cookie_file, "r", encoding="utf-8") as f:
             content = f.read().strip()
         if content.startswith("{"):
             data = json.loads(content)
@@ -103,8 +105,8 @@ def load_cookie() -> tuple:
             sapisid = data.get("sapisid", "")
         else:
             cookie_str = content
-            pairs = dict(p.split("=", 1) for p in cookie_str.split("; ") if "=" in p)
-            sapisid = pairs.get("SAPISID", "")
+            pairs = dict(p.split("=", 1) for p in cookie_str.split(";") if "=" in p)
+            sapisid = pairs.get("SAPISID", "").strip()
         cache_entry.update({"str": cookie_str, "sapisid": sapisid or None, "mtime": mtime})
         return cookie_str, sapisid if sapisid else None
     except Exception as e:
@@ -312,16 +314,37 @@ def generate(prompt: str, model_id: int, think_mode: int, file_refs: list = None
                 log("curl_cffi failed, falling back to httpx engine for next retry...")
                 session = None
             err_str = str(e)
-            if "BardErrorInfo" in err_str or "429" in err_str or "HTTP Error" in err_str:
-                from .config import mark_account_rate_limited, set_current_account, get_current_account, is_current_account_forced
+            is_rate_limit = "429" in err_str or "BardErrorInfo [102]" in err_str or "RESOURCE_EXHAUSTED" in err_str
+            is_auth_error = "accounts.google.com" in err_str or "302" in err_str or "401" in err_str or "SNlM0e" in err_str
+            
+            from .config import mark_account_rate_limited, set_current_account, get_current_account, is_current_account_forced
+            acc_name = get_current_account().get("name")
+            
+            if is_rate_limit:
                 if is_current_account_forced():
-                    raise RuntimeError("Forced account is currently rate-limited. Please wait or select auto.")
-                acc_name = get_current_account().get("name")
+                    raise RuntimeError(f"Forced account '{acc_name}' is rate-limited by Google quota. Please wait or select auto.")
                 if acc_name:
                     mark_account_rate_limited(acc_name, 3600)
                 try:
-                    set_current_account() # Pick new account
-                except:
+                    set_current_account()
+                except Exception:
+                    pass
+            elif is_auth_error:
+                log(f"[-] Account '{acc_name}' session expired or redirected to login. Please sync fresh cookies.")
+                if is_current_account_forced():
+                    raise RuntimeError(f"Forced account '{acc_name}' session expired or redirected to Google login. Please update cookies via extension.")
+                try:
+                    set_current_account()
+                except Exception:
+                    pass
+            elif "HTTP Error" in err_str or "BardErrorInfo" in err_str:
+                if is_current_account_forced():
+                    raise RuntimeError(f"Forced account '{acc_name}' error: {err_str}")
+                if acc_name:
+                    mark_account_rate_limited(acc_name, 120)
+                try:
+                    set_current_account()
+                except Exception:
                     pass
             if attempt < CONFIG["retry_attempts"] - 1:
                 log(f"Retry {attempt+1}/{CONFIG['retry_attempts']}: {e}")
@@ -415,17 +438,37 @@ def generate_stream(prompt: str, model_id: int, think_mode: int, file_refs: list
                 session = None
                 client = _get_httpx_client()
             err_str = str(e)
-            if "BardErrorInfo" in err_str or "429" in err_str or "HTTPStatusError" in err_str:
-                from .config import mark_account_rate_limited, set_current_account, get_current_account, is_current_account_forced
+            is_rate_limit = "429" in err_str or "BardErrorInfo [102]" in err_str or "RESOURCE_EXHAUSTED" in err_str
+            is_auth_error = "accounts.google.com" in err_str or "302" in err_str or "401" in err_str or "SNlM0e" in err_str
+            
+            from .config import mark_account_rate_limited, set_current_account, get_current_account, is_current_account_forced
+            acc_name = get_current_account().get("name")
+            
+            if is_rate_limit:
                 if is_current_account_forced():
-                    raise RuntimeError("Forced account is currently rate-limited. Please wait or select auto.")
-                    
-                acc_name = get_current_account().get("name")
+                    raise RuntimeError(f"Forced account '{acc_name}' is rate-limited by Google quota. Please wait or select auto.")
                 if acc_name:
                     mark_account_rate_limited(acc_name, 3600)
                 try:
                     set_current_account()
-                except:
+                except Exception:
+                    pass
+            elif is_auth_error:
+                log(f"[-] Account '{acc_name}' session expired or redirected to login. Please sync fresh cookies.")
+                if is_current_account_forced():
+                    raise RuntimeError(f"Forced account '{acc_name}' session expired or redirected to Google login. Please update cookies via extension.")
+                try:
+                    set_current_account()
+                except Exception:
+                    pass
+            elif "HTTPStatusError" in err_str or "BardErrorInfo" in err_str:
+                if is_current_account_forced():
+                    raise RuntimeError(f"Forced account '{acc_name}' stream error: {err_str}")
+                if acc_name:
+                    mark_account_rate_limited(acc_name, 120)
+                try:
+                    set_current_account()
+                except Exception:
                     pass
             if attempt < CONFIG["retry_attempts"] - 1:
                 log(f"Stream retry {attempt+1}/{CONFIG['retry_attempts']}: {e}")
